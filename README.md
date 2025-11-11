@@ -24,8 +24,11 @@ python3 analysis.py
 
 The script generates `activation_performance_analysis.csv` with the following columns:
 
+**Note:** Each activation creates separate rows for Week 1 and Week 2, with metrics calculated independently for each week. If an activation spans both weeks, it will appear twice with different performance metrics.
+
 | Column | Description |
 |--------|-------------|
+| `week` | Which analysis week (Week 1 or Week 2) |
 | `activation_id` | Unique activation identifier |
 | `restaurant_name` | Restaurant name |
 | `location_name` | Location name |
@@ -49,6 +52,10 @@ The script generates `activation_performance_analysis.csv` with the following co
 - Based on current date of November 11, 2025:
   - Week 1: October 27 - November 2, 2025
   - Week 2: November 3 - 9, 2025
+- **Performance is tracked separately for each week**
+  - Each activation gets a row for Week 1 and/or Week 2
+  - Metrics (TPV, users, etc.) only count transactions within that specific week
+  - If an activation spans both weeks, it appears twice with different metrics
 
 ### Baseline Comparison
 - Compares performance to same day-of-week and time windows from previous 4 weeks
@@ -79,5 +86,8 @@ Must contain: `id`, `restaurant_id`, `restaurant_group_id`, `restaurant_name`, `
 
 - Processes 300,000+ transactions and 23,000+ activations
 - Typical run time: 30-60 seconds
-- Output: ~250 qualifying activations for the analysis period
+- Output: ~250 rows (248 unique activations broken out by week)
+  - Week 1: ~113 activation-week combinations
+  - Week 2: ~137 activation-week combinations
+  - A small number of activations may appear in both weeks if they span the week boundary
 
