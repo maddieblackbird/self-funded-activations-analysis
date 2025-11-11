@@ -11,8 +11,8 @@ pip install -r requirements.txt
 ## Usage
 
 Ensure the following files are in the same directory as `analysis.py`:
-- `all_transactions.csv`
-- `all_activations.csv`
+- `all_transactions.csv` -- comes from here: https://blackbird-labs.metabaseapp.com/question/13934-full-history-of-payments-at-this-restaurant?restaurant_name=&market=
+- `all_activations.csv`: comes from here: https://blackbird-labs.metabaseapp.com/question/19603-all-activations-paired-with-restaurant-group
 
 Then run:
 
