@@ -13,7 +13,7 @@ from collections import defaultdict
 # CONFIGURATION & DATE SETUP
 # ============================================================================
 
-CURRENT_DATE = datetime.now()  # November 11, 2025
+CURRENT_DATE = datetime.now()  
 
 # Calculate last two complete calendar weeks (Monday-Sunday)
 def get_last_complete_weeks(current_date):
@@ -111,7 +111,7 @@ print("Loading data files...")
 transactions = pd.read_csv('all_transactions.csv', low_memory=False)
 print(f"Loaded {len(transactions):,} transactions")
 
-# Load activations (handle duplicate location_id column)
+# Load activations
 activations = pd.read_csv('all_activations.csv', low_memory=False)
 print(f"Loaded {len(activations):,} activations")
 
@@ -123,7 +123,6 @@ activations['end_dt'] = activations['end_date'].apply(parse_activation_date)
 
 # Parse amounts
 transactions['amount'] = transactions['adj_amount'].apply(parse_amount)
-transactions['refund_amount'] = transactions['adj_refund_amount'].apply(parse_amount)
 
 # Parse activations initial budget
 activations['initial_budget'] = activations['group_initial_budget'].apply(parse_amount)
@@ -216,21 +215,21 @@ transactions['match_key'] = (
 
 print("\nBuilding activation exclusion map for baseline calculations...")
 
-# For each restaurant_id, collect all activation periods
+# For each match_key (restaurant_name + location_name), collect all activation periods
 activation_periods = defaultdict(list)
 for _, act in activations.iterrows():
-    if pd.notna(act['restaurant_id']) and pd.notna(act['start_dt']) and pd.notna(act['end_dt']):
-        activation_periods[act['restaurant_id']].append({
+    if pd.notna(act['match_key']) and pd.notna(act['start_dt']) and pd.notna(act['end_dt']):
+        activation_periods[act['match_key']].append({
             'start': act['start_dt'],
             'end': act['end_dt']
         })
 
-def is_in_activation_period(restaurant_id, check_start, check_end):
-    """Check if a time period overlaps with any activation for this restaurant"""
-    if restaurant_id not in activation_periods:
+def is_in_activation_period(match_key, check_start, check_end):
+    """Check if a time period overlaps with any activation for this restaurant location"""
+    if match_key not in activation_periods:
         return False
     
-    for period in activation_periods[restaurant_id]:
+    for period in activation_periods[match_key]:
         # Check for overlap
         if not (check_end < period['start'] or check_start > period['end']):
             return True
@@ -354,21 +353,16 @@ for idx, activation in spend_activations.iterrows():
         # BASELINE COMPARISON
         # ====================================================================
         
-        # Get day-of-week and time window for activation
-        activation_start_time = effective_start.time()
-        activation_end_time = effective_end.time()
-        activation_dow = effective_start.weekday()  # Monday=0
-        
         # Calculate baseline from previous 4 weeks (same day-of-week)
         baseline_tpv_values = []
-        baseline_check_values = []
+        baseline_median_values = []  # Store median from each baseline week
         
         for week_offset in range(1, 5):  # Previous 4 weeks
             baseline_start = effective_start - timedelta(weeks=week_offset)
             baseline_end = effective_end - timedelta(weeks=week_offset)
             
             # Skip if this baseline period overlaps with any activation
-            if is_in_activation_period(restaurant_id, baseline_start, baseline_end):
+            if is_in_activation_period(match_key, baseline_start, baseline_end):
                 continue
             
             # Get transactions in baseline period
@@ -380,7 +374,7 @@ for idx, activation in spend_activations.iterrows():
             
             if len(baseline_txns) > 0:
                 baseline_tpv_values.append(baseline_txns['amount'].sum())
-                baseline_check_values.extend(baseline_txns['amount'].tolist())
+                baseline_median_values.append(baseline_txns['amount'].median())
         
         # Calculate baseline comparison
         if len(baseline_tpv_values) > 0:
@@ -392,8 +386,8 @@ for idx, activation in spend_activations.iterrows():
         else:
             tpv_vs_baseline = None  # No baseline data
         
-        if len(baseline_check_values) > 0:
-            baseline_median_check = np.median(baseline_check_values)
+        if len(baseline_median_values) > 0:
+            baseline_median_check = np.median(baseline_median_values)
             if baseline_median_check > 0:
                 median_check_vs_baseline = ((median_check - baseline_median_check) / baseline_median_check) * 100
             else:
@@ -526,14 +520,14 @@ for idx, activation in spend_activations.iterrows():
         
         # Daily baseline comparison (same day-of-week, previous 4 weeks)
         daily_baseline_tpv_values = []
-        daily_baseline_check_values = []
+        daily_baseline_median_values = []
         
         for week_offset in range(1, 5):
             baseline_day_start = effective_day_start - timedelta(weeks=week_offset)
             baseline_day_end = effective_day_end - timedelta(weeks=week_offset)
             
             # Skip if baseline period overlaps with any activation
-            if is_in_activation_period(restaurant_id, baseline_day_start, baseline_day_end):
+            if is_in_activation_period(match_key, baseline_day_start, baseline_day_end):
                 continue
             
             baseline_day_txns = transactions[
@@ -544,7 +538,7 @@ for idx, activation in spend_activations.iterrows():
             
             if len(baseline_day_txns) > 0:
                 daily_baseline_tpv_values.append(baseline_day_txns['amount'].sum())
-                daily_baseline_check_values.extend(baseline_day_txns['amount'].tolist())
+                daily_baseline_median_values.append(baseline_day_txns['amount'].median())
         
         # Calculate daily baseline comparison
         if len(daily_baseline_tpv_values) > 0:
@@ -556,8 +550,8 @@ for idx, activation in spend_activations.iterrows():
         else:
             daily_tpv_vs_baseline = None
         
-        if len(daily_baseline_check_values) > 0:
-            daily_baseline_median_check = np.median(daily_baseline_check_values)
+        if len(daily_baseline_median_values) > 0:
+            daily_baseline_median_check = np.median(daily_baseline_median_values)
             if daily_baseline_median_check > 0:
                 daily_median_check_vs_baseline = ((daily_median_check - daily_baseline_median_check) / daily_baseline_median_check) * 100
             else:
@@ -623,4 +617,3 @@ print(f"  Total marketing spend: ${daily_df['marketing_spend'].sum():,.2f}")
 print(f"  Average TPV per day: ${daily_df['total_tpv'].mean():,.2f}")
 print(f"  Average users per day: {daily_df['unique_users_count'].mean():.1f}")
 print(f"  Average new user percentage: {daily_df['new_user_percentage'].mean():.1f}%")
-
