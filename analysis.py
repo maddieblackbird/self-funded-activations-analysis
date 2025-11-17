@@ -13,7 +13,7 @@ from collections import defaultdict
 # CONFIGURATION & DATE SETUP
 # ============================================================================
 
-CURRENT_DATE = datetime(2025, 11, 11)  # November 11, 2025
+CURRENT_DATE = datetime.now()  # November 11, 2025
 
 # Calculate last two complete calendar weeks (Monday-Sunday)
 def get_last_complete_weeks(current_date):
@@ -55,7 +55,7 @@ print()
 # ============================================================================
 
 def parse_transaction_date(date_str):
-    """Parse transaction date format: 'November 11, 2025, 1:03 PM'"""
+    """Parse transaction date format: 'November 17, 2025, 1:03 PM'"""
     try:
         return pd.to_datetime(date_str, format='%B %d, %Y, %I:%M %p')
     except:
