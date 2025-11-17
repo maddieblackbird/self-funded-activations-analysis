@@ -435,11 +435,25 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         if has_transactions:
             for user_id in matching_txns['user_id'].unique():
                 key = (match_key, user_id)
-                # FIXED: User is new ONLY if they have NEVER transacted at this restaurant/location before
-                if key not in user_first_transaction:
-                    new_users += 1  # No prior history = truly new user
+                
+                if key in user_first_transaction:
+                    first_txn_date = user_first_transaction[key]
+                    
+                    # User is "new" if their FIRST EVER transaction at this location
+                    # happened during ANY of the activation periods (not continuous range)
+                    is_new = False
+                    for period in activation_periods_list:
+                        if first_txn_date >= period['start'] and first_txn_date <= period['end']:
+                            is_new = True
+                            break
+                    
+                    if is_new:
+                        new_users += 1
+                    else:
+                        returning_users += 1
                 else:
-                    returning_users += 1  # Has any prior history = returning user
+                    # Should not happen, but if it does, count as new
+                    new_users += 1
         
         new_user_percentage = (new_users / unique_users * 100) if unique_users > 0 else None
         
@@ -693,11 +707,25 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         if has_daily_transactions:
             for user_id in daily_txns['user_id'].unique():
                 key = (match_key, user_id)
-                # FIXED: User is new ONLY if they have NEVER transacted at this restaurant/location before
-                if key not in user_first_transaction:
-                    daily_new_users += 1  # No prior history = truly new user
+                
+                if key in user_first_transaction:
+                    first_txn_date = user_first_transaction[key]
+                    
+                    # User is "new" if their FIRST EVER transaction at this location
+                    # happened during ANY of the activation periods (not continuous range)
+                    is_new = False
+                    for period in activation_periods_list:
+                        if first_txn_date >= period['start'] and first_txn_date <= period['end']:
+                            is_new = True
+                            break
+                    
+                    if is_new:
+                        daily_new_users += 1
+                    else:
+                        daily_returning_users += 1
                 else:
-                    daily_returning_users += 1  # Has any prior history = returning user
+                    # Should not happen, but if it does, count as new
+                    daily_new_users += 1
         
         daily_new_user_percentage = (daily_new_users / daily_unique_users * 100) if daily_unique_users > 0 else None
         
