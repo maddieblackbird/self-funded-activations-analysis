@@ -22,13 +22,39 @@ python3 analysis.py
 
 ## Output
 
-The script generates `activation_performance_analysis.csv` with the following columns:
+The script generates **two CSV files**:
+
+### 1. `activation_performance_analysis_weekly.csv`
 
 **Note:** Each activation creates separate rows for Week 1 and Week 2, with metrics calculated independently for each week. If an activation spans both weeks, it will appear twice with different performance metrics.
 
 | Column | Description |
 |--------|-------------|
 | `week` | Which analysis week (Week 1 or Week 2) |
+| `activation_id` | Unique activation identifier |
+| `restaurant_name` | Restaurant name |
+| `location_name` | Location name |
+| `activation_description` | Full promotion description |
+| `activation_start` | Start date/time |
+| `activation_end` | End date/time |
+| `unique_users_count` | Number of unique users who transacted |
+| `total_tpv` | Total payment volume during activation |
+| `tpv_vs_baseline` | TPV change vs baseline (% or null if no baseline) |
+| `median_check_vs_baseline` | Median check change vs baseline (%) |
+| `marketing_spend` | Total rewards earned (qualifying transactions × reward amount) |
+| `remaining_group_budget` | Remaining budget for restaurant group |
+| `new_users_count` | Users with no prior transactions at restaurant |
+| `returning_users_count` | Users with prior transactions |
+| `new_user_percentage` | Percentage of users who are new |
+
+### 2. `activation_performance_analysis_daily.csv`
+
+**Note:** Each activation creates a row for every day it was active during the analysis period. Multi-day activations will have multiple rows showing day-by-day performance.
+
+| Column | Description |
+|--------|-------------|
+| `date` | Date (YYYY-MM-DD) |
+| `day_of_week` | Day of week (e.g., Monday, Tuesday) |
 | `activation_id` | Unique activation identifier |
 | `restaurant_name` | Restaurant name |
 | `location_name` | Location name |
@@ -85,9 +111,12 @@ Must contain: `id`, `restaurant_id`, `restaurant_group_id`, `restaurant_name`, `
 ## Performance
 
 - Processes 300,000+ transactions and 23,000+ activations
-- Typical run time: 30-60 seconds
-- Output: ~250 rows (248 unique activations broken out by week)
+- Typical run time: 60-120 seconds (due to daily breakdown calculations)
+- Weekly output: ~250 rows (248 unique activations broken out by week)
   - Week 1: ~113 activation-week combinations
   - Week 2: ~137 activation-week combinations
   - A small number of activations may appear in both weeks if they span the week boundary
+- Daily output: ~500-1000 rows (depends on activation duration)
+  - Each activation creates one row per active day
+  - Multi-day activations will have multiple entries
 

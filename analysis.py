@@ -162,16 +162,29 @@ print(f"  Activations with valid parsed values: {len(spend_activations):,}")
 
 if len(spend_activations) == 0:
     print("\nWARNING: No qualifying activations found!")
-    print("Creating empty output file...")
-    empty_df = pd.DataFrame(columns=[
+    print("Creating empty output files...")
+    
+    # Empty weekly file
+    weekly_empty_df = pd.DataFrame(columns=[
         'week', 'activation_id', 'restaurant_name', 'location_name', 'activation_description',
         'activation_start', 'activation_end', 'unique_users_count', 'total_tpv',
         'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
         'remaining_group_budget', 'new_users_count', 'returning_users_count',
         'new_user_percentage'
     ])
-    empty_df.to_csv('activation_performance_analysis.csv', index=False)
-    print("Empty output file created.")
+    weekly_empty_df.to_csv('activation_performance_analysis_weekly.csv', index=False)
+    
+    # Empty daily file
+    daily_empty_df = pd.DataFrame(columns=[
+        'date', 'day_of_week', 'activation_id', 'restaurant_name', 'location_name', 
+        'activation_description', 'activation_start', 'activation_end', 'unique_users_count', 
+        'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
+        'remaining_group_budget', 'new_users_count', 'returning_users_count',
+        'new_user_percentage'
+    ])
+    daily_empty_df.to_csv('activation_performance_analysis_daily.csv', index=False)
+    
+    print("Empty output files created.")
     exit(0)
 
 # ============================================================================
@@ -252,7 +265,8 @@ for _, txn in transactions_sorted.iterrows():
 # ============================================================================
 
 print("\nAnalyzing activations...")
-results = []
+weekly_results = []
+daily_results = []
 
 for idx, activation in spend_activations.iterrows():
     if idx % 100 == 0:
@@ -430,10 +444,10 @@ for idx, activation in spend_activations.iterrows():
         remaining_group_budget = initial_budget - total_group_spend if initial_budget > 0 else 0.0
         
         # ====================================================================
-        # STORE RESULTS
+        # STORE WEEKLY RESULTS
         # ====================================================================
         
-        results.append({
+        weekly_results.append({
             'week': week_label,
             'activation_id': activation_id,
             'restaurant_name': restaurant_name,
@@ -451,23 +465,162 @@ for idx, activation in spend_activations.iterrows():
             'returning_users_count': returning_users,
             'new_user_percentage': round(new_user_percentage, 2)
         })
+    
+    # ========================================================================
+    # DAILY ANALYSIS
+    # ========================================================================
+    
+    # Analyze each day the activation was active
+    current_day = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    activation_end_day = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    
+    while current_day <= activation_end_day:
+        day_start = current_day
+        day_end = current_day.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        # Only analyze days within the analysis period
+        if day_end < ANALYSIS_START or day_start > ANALYSIS_END:
+            current_day += timedelta(days=1)
+            continue
+        
+        # Get the effective date range for this day
+        effective_day_start = max(day_start, start_dt, ANALYSIS_START)
+        effective_day_end = min(day_end, end_dt, ANALYSIS_END)
+        
+        # Match transactions for this day
+        daily_txns = transactions[
+            (transactions['match_key'] == match_key) &
+            (transactions['created_at_dt'] >= effective_day_start) &
+            (transactions['created_at_dt'] <= effective_day_end)
+        ].copy()
+        
+        # Calculate daily metrics
+        daily_unique_users = daily_txns['user_id'].nunique()
+        daily_total_tpv = daily_txns['amount'].sum()
+        
+        if len(daily_txns) > 0:
+            daily_median_check = daily_txns['amount'].median()
+        else:
+            daily_median_check = 0.0
+        
+        # Calculate daily marketing spend
+        daily_qualifying_txns = daily_txns[daily_txns['amount'] >= minimum_spend]
+        daily_marketing_spend = len(daily_qualifying_txns) * reward_amount
+        
+        # New vs Returning users for this day
+        daily_new_users = 0
+        daily_returning_users = 0
+        
+        for user_id in daily_txns['user_id'].unique():
+            key = (restaurant_name, user_id)
+            if key in user_first_transaction:
+                first_txn_date = user_first_transaction[key]
+                if first_txn_date >= effective_day_start:
+                    daily_new_users += 1
+                else:
+                    daily_returning_users += 1
+            else:
+                daily_new_users += 1
+        
+        daily_new_user_percentage = (daily_new_users / daily_unique_users * 100) if daily_unique_users > 0 else 0.0
+        
+        # Daily baseline comparison (same day-of-week, previous 4 weeks)
+        daily_baseline_tpv_values = []
+        daily_baseline_check_values = []
+        
+        for week_offset in range(1, 5):
+            baseline_day_start = effective_day_start - timedelta(weeks=week_offset)
+            baseline_day_end = effective_day_end - timedelta(weeks=week_offset)
+            
+            # Skip if baseline period overlaps with any activation
+            if is_in_activation_period(restaurant_id, baseline_day_start, baseline_day_end):
+                continue
+            
+            baseline_day_txns = transactions[
+                (transactions['match_key'] == match_key) &
+                (transactions['created_at_dt'] >= baseline_day_start) &
+                (transactions['created_at_dt'] <= baseline_day_end)
+            ]
+            
+            if len(baseline_day_txns) > 0:
+                daily_baseline_tpv_values.append(baseline_day_txns['amount'].sum())
+                daily_baseline_check_values.extend(baseline_day_txns['amount'].tolist())
+        
+        # Calculate daily baseline comparison
+        if len(daily_baseline_tpv_values) > 0:
+            avg_daily_baseline_tpv = np.mean(daily_baseline_tpv_values)
+            if avg_daily_baseline_tpv > 0:
+                daily_tpv_vs_baseline = ((daily_total_tpv - avg_daily_baseline_tpv) / avg_daily_baseline_tpv) * 100
+            else:
+                daily_tpv_vs_baseline = 0.0 if daily_total_tpv == 0 else 999.0
+        else:
+            daily_tpv_vs_baseline = None
+        
+        if len(daily_baseline_check_values) > 0:
+            daily_baseline_median_check = np.median(daily_baseline_check_values)
+            if daily_baseline_median_check > 0:
+                daily_median_check_vs_baseline = ((daily_median_check - daily_baseline_median_check) / daily_baseline_median_check) * 100
+            else:
+                daily_median_check_vs_baseline = 0.0 if daily_median_check == 0 else 999.0
+        else:
+            daily_median_check_vs_baseline = None
+        
+        # Store daily results
+        daily_results.append({
+            'date': current_day.strftime('%Y-%m-%d'),
+            'day_of_week': current_day.strftime('%A'),
+            'activation_id': activation_id,
+            'restaurant_name': restaurant_name,
+            'location_name': location_name,
+            'activation_description': description,
+            'activation_start': start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'activation_end': end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'unique_users_count': daily_unique_users,
+            'total_tpv': round(daily_total_tpv, 2),
+            'tpv_vs_baseline': round(daily_tpv_vs_baseline, 2) if daily_tpv_vs_baseline is not None else None,
+            'median_check_vs_baseline': round(daily_median_check_vs_baseline, 2) if daily_median_check_vs_baseline is not None else None,
+            'marketing_spend': round(daily_marketing_spend, 2),
+            'remaining_group_budget': round(remaining_group_budget, 2),
+            'new_users_count': daily_new_users,
+            'returning_users_count': daily_returning_users,
+            'new_user_percentage': round(daily_new_user_percentage, 2)
+        })
+        
+        current_day += timedelta(days=1)
 
 # ============================================================================
 # OUTPUT RESULTS
 # ============================================================================
 
-print(f"\nCreating output file with {len(results)} activations...")
+print(f"\nCreating output files...")
+print(f"  Weekly results: {len(weekly_results)} entries")
+print(f"  Daily results: {len(daily_results)} entries")
 
-results_df = pd.DataFrame(results)
-output_file = 'activation_performance_analysis.csv'
-results_df.to_csv(output_file, index=False)
+# Create weekly output
+weekly_df = pd.DataFrame(weekly_results)
+weekly_output_file = 'activation_performance_analysis_weekly.csv'
+weekly_df.to_csv(weekly_output_file, index=False)
+
+# Create daily output
+daily_df = pd.DataFrame(daily_results)
+daily_output_file = 'activation_performance_analysis_daily.csv'
+daily_df.to_csv(daily_output_file, index=False)
 
 print(f"\n✓ Analysis complete!")
-print(f"  Output saved to: {output_file}")
-print(f"\nSummary Statistics:")
-print(f"  Total activations analyzed: {len(results_df)}")
-print(f"  Total marketing spend: ${results_df['marketing_spend'].sum():,.2f}")
-print(f"  Average TPV per activation: ${results_df['total_tpv'].mean():,.2f}")
-print(f"  Average users per activation: {results_df['unique_users_count'].mean():.1f}")
-print(f"  Average new user percentage: {results_df['new_user_percentage'].mean():.1f}%")
+print(f"  Weekly output saved to: {weekly_output_file}")
+print(f"  Daily output saved to: {daily_output_file}")
+
+print(f"\nWeekly Summary Statistics:")
+print(f"  Total weekly entries: {len(weekly_df)}")
+print(f"  Total marketing spend: ${weekly_df['marketing_spend'].sum():,.2f}")
+print(f"  Average TPV per week: ${weekly_df['total_tpv'].mean():,.2f}")
+print(f"  Average users per week: {weekly_df['unique_users_count'].mean():.1f}")
+print(f"  Average new user percentage: {weekly_df['new_user_percentage'].mean():.1f}%")
+
+print(f"\nDaily Summary Statistics:")
+print(f"  Total daily entries: {len(daily_df)}")
+print(f"  Total marketing spend: ${daily_df['marketing_spend'].sum():,.2f}")
+print(f"  Average TPV per day: ${daily_df['total_tpv'].mean():,.2f}")
+print(f"  Average users per day: {daily_df['unique_users_count'].mean():.1f}")
+print(f"  Average new user percentage: {daily_df['new_user_percentage'].mean():.1f}%")
 
