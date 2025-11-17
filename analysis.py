@@ -145,12 +145,12 @@ spend_activations = activations[
 ].copy()
 print(f"  Activations starting with 'Spend $': {len(spend_activations):,}")
 
-# Filter 2: Only activations in analysis period
+# Filter 2: Only activations that overlap with analysis period (using overlap logic)
 spend_activations = spend_activations[
-    (spend_activations['start_dt'] >= ANALYSIS_START) & 
-    (spend_activations['end_dt'] <= ANALYSIS_END)
+    (spend_activations['start_dt'] <= ANALYSIS_END) & 
+    (spend_activations['end_dt'] >= ANALYSIS_START)
 ].copy()
-print(f"  Activations in analysis period: {len(spend_activations):,}")
+print(f"  Activations overlapping with analysis period: {len(spend_activations):,}")
 
 # Validate parsed values
 spend_activations = spend_activations[
@@ -169,7 +169,7 @@ if len(spend_activations) == 0:
         'activation_start', 'activation_end', 'unique_users_count', 'total_tpv',
         'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
         'remaining_group_budget', 'new_users_count', 'returning_users_count',
-        'new_user_percentage'
+        'new_user_percentage', 'notes'
     ])
     weekly_empty_df.to_csv('activation_performance_analysis_weekly.csv', index=False)
     
@@ -179,7 +179,7 @@ if len(spend_activations) == 0:
         'activation_description', 'activation_start', 'activation_end', 'unique_users_count', 
         'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
         'remaining_group_budget', 'new_users_count', 'returning_users_count',
-        'new_user_percentage'
+        'new_user_percentage', 'notes'
     ])
     daily_empty_df.to_csv('activation_performance_analysis_daily.csv', index=False)
     
@@ -244,18 +244,18 @@ print("\nCalculating user history for new/returning classification...")
 # Sort transactions by date
 transactions_sorted = transactions.sort_values('created_at_dt')
 
-# For each restaurant, track first transaction date per user
+# For each restaurant (using match_key), track first transaction date per user
 user_first_transaction = {}
 
 for _, txn in transactions_sorted.iterrows():
     if pd.isna(txn['created_at_dt']):
         continue
     
-    rest_name = txn['rest_name']
+    match_key = txn['match_key']
     user_id = txn['user_id']
     txn_date = txn['created_at_dt']
     
-    key = (rest_name, user_id)
+    key = (match_key, user_id)
     if key not in user_first_transaction:
         user_first_transaction[key] = txn_date
 
@@ -318,82 +318,91 @@ for idx, activation in spend_activations.iterrows():
             (transactions['created_at_dt'] <= effective_end)
         ].copy()
         
+        # Check if there are zero transactions
+        has_transactions = len(matching_txns) > 0
+        notes = "" if has_transactions else "No transactions during activation period"
+        
         # Calculate basic metrics
-        unique_users = matching_txns['user_id'].nunique()
-        total_tpv = matching_txns['amount'].sum()
+        unique_users = matching_txns['user_id'].nunique() if has_transactions else 0
+        total_tpv = matching_txns['amount'].sum() if has_transactions else 0.0
         
         # Calculate median check
-        if len(matching_txns) > 0:
+        if has_transactions:
             median_check = matching_txns['amount'].median()
         else:
-            median_check = 0.0
+            median_check = None
         
         # Calculate marketing spend (transactions meeting minimum spend)
-        qualifying_txns = matching_txns[matching_txns['amount'] >= minimum_spend]
-        marketing_spend = len(qualifying_txns) * reward_amount
+        if has_transactions:
+            qualifying_txns = matching_txns[matching_txns['amount'] >= minimum_spend]
+            marketing_spend = len(qualifying_txns) * reward_amount
+        else:
+            marketing_spend = 0.0
         
         # New vs Returning users
         new_users = 0
         returning_users = 0
         
-        for user_id in matching_txns['user_id'].unique():
-            key = (restaurant_name, user_id)
-            if key in user_first_transaction:
-                first_txn_date = user_first_transaction[key]
-                if first_txn_date >= effective_start:
-                    new_users += 1
+        if has_transactions:
+            for user_id in matching_txns['user_id'].unique():
+                key = (match_key, user_id)
+                if key in user_first_transaction:
+                    first_txn_date = user_first_transaction[key]
+                    # User is new if their first transaction was during the activation period
+                    if first_txn_date >= start_dt and first_txn_date <= end_dt:
+                        new_users += 1
+                    else:
+                        returning_users += 1
                 else:
-                    returning_users += 1
-            else:
-                new_users += 1  # No prior history
+                    new_users += 1  # No prior history
         
-        new_user_percentage = (new_users / unique_users * 100) if unique_users > 0 else 0.0
+        new_user_percentage = (new_users / unique_users * 100) if unique_users > 0 else None
         
         # ====================================================================
         # BASELINE COMPARISON
         # ====================================================================
         
-        # Calculate baseline from previous 4 weeks (same day-of-week)
-        baseline_tpv_values = []
-        baseline_median_values = []  # Store median from each baseline week
+        tpv_vs_baseline = None
+        median_check_vs_baseline = None
         
-        for week_offset in range(1, 5):  # Previous 4 weeks
-            baseline_start = effective_start - timedelta(weeks=week_offset)
-            baseline_end = effective_end - timedelta(weeks=week_offset)
+        if has_transactions:
+            # Calculate baseline from previous 4 weeks (same day-of-week)
+            baseline_tpv_values = []
+            baseline_median_values = []  # Store median from each baseline week
             
-            # Skip if this baseline period overlaps with any activation
-            if is_in_activation_period(match_key, baseline_start, baseline_end):
-                continue
+            for week_offset in range(1, 5):  # Previous 4 weeks
+                baseline_start = effective_start - timedelta(weeks=week_offset)
+                baseline_end = effective_end - timedelta(weeks=week_offset)
+                
+                # Skip if this baseline period overlaps with any activation
+                if is_in_activation_period(match_key, baseline_start, baseline_end):
+                    continue
+                
+                # Get transactions in baseline period
+                baseline_txns = transactions[
+                    (transactions['match_key'] == match_key) &
+                    (transactions['created_at_dt'] >= baseline_start) &
+                    (transactions['created_at_dt'] <= baseline_end)
+                ]
+                
+                if len(baseline_txns) > 0:
+                    baseline_tpv_values.append(baseline_txns['amount'].sum())
+                    baseline_median_values.append(baseline_txns['amount'].median())
             
-            # Get transactions in baseline period
-            baseline_txns = transactions[
-                (transactions['match_key'] == match_key) &
-                (transactions['created_at_dt'] >= baseline_start) &
-                (transactions['created_at_dt'] <= baseline_end)
-            ]
+            # Calculate baseline comparison
+            if len(baseline_tpv_values) > 0:
+                avg_baseline_tpv = np.mean(baseline_tpv_values)
+                if avg_baseline_tpv > 0:
+                    tpv_vs_baseline = ((total_tpv - avg_baseline_tpv) / avg_baseline_tpv) * 100
+                else:
+                    tpv_vs_baseline = 0.0 if total_tpv == 0 else 999.0  # Infinite growth
             
-            if len(baseline_txns) > 0:
-                baseline_tpv_values.append(baseline_txns['amount'].sum())
-                baseline_median_values.append(baseline_txns['amount'].median())
-        
-        # Calculate baseline comparison
-        if len(baseline_tpv_values) > 0:
-            avg_baseline_tpv = np.mean(baseline_tpv_values)
-            if avg_baseline_tpv > 0:
-                tpv_vs_baseline = ((total_tpv - avg_baseline_tpv) / avg_baseline_tpv) * 100
-            else:
-                tpv_vs_baseline = 0.0 if total_tpv == 0 else 999.0  # Infinite growth
-        else:
-            tpv_vs_baseline = None  # No baseline data
-        
-        if len(baseline_median_values) > 0:
-            baseline_median_check = np.median(baseline_median_values)
-            if baseline_median_check > 0:
-                median_check_vs_baseline = ((median_check - baseline_median_check) / baseline_median_check) * 100
-            else:
-                median_check_vs_baseline = 0.0 if median_check == 0 else 999.0
-        else:
-            median_check_vs_baseline = None
+            if len(baseline_median_values) > 0:
+                baseline_median_check = np.median(baseline_median_values)
+                if baseline_median_check > 0:
+                    median_check_vs_baseline = ((median_check - baseline_median_check) / baseline_median_check) * 100
+                else:
+                    median_check_vs_baseline = 0.0 if median_check == 0 else 999.0
         
         # ====================================================================
         # CALCULATE REMAINING GROUP BUDGET
@@ -450,14 +459,15 @@ for idx, activation in spend_activations.iterrows():
             'activation_start': start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': unique_users,
-            'total_tpv': round(total_tpv, 2),
+            'total_tpv': round(total_tpv, 2) if has_transactions else 0.0,
             'tpv_vs_baseline': round(tpv_vs_baseline, 2) if tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(median_check_vs_baseline, 2) if median_check_vs_baseline is not None else None,
             'marketing_spend': round(marketing_spend, 2),
             'remaining_group_budget': round(remaining_group_budget, 2),
             'new_users_count': new_users,
             'returning_users_count': returning_users,
-            'new_user_percentage': round(new_user_percentage, 2)
+            'new_user_percentage': round(new_user_percentage, 2) if new_user_percentage is not None else None,
+            'notes': notes
         })
     
     # ========================================================================
@@ -488,76 +498,85 @@ for idx, activation in spend_activations.iterrows():
             (transactions['created_at_dt'] <= effective_day_end)
         ].copy()
         
-        # Calculate daily metrics
-        daily_unique_users = daily_txns['user_id'].nunique()
-        daily_total_tpv = daily_txns['amount'].sum()
+        # Check if there are zero transactions for this day
+        has_daily_transactions = len(daily_txns) > 0
+        daily_notes = "" if has_daily_transactions else "No transactions during activation period"
         
-        if len(daily_txns) > 0:
+        # Calculate daily metrics
+        daily_unique_users = daily_txns['user_id'].nunique() if has_daily_transactions else 0
+        daily_total_tpv = daily_txns['amount'].sum() if has_daily_transactions else 0.0
+        
+        if has_daily_transactions:
             daily_median_check = daily_txns['amount'].median()
         else:
-            daily_median_check = 0.0
+            daily_median_check = None
         
         # Calculate daily marketing spend
-        daily_qualifying_txns = daily_txns[daily_txns['amount'] >= minimum_spend]
-        daily_marketing_spend = len(daily_qualifying_txns) * reward_amount
+        if has_daily_transactions:
+            daily_qualifying_txns = daily_txns[daily_txns['amount'] >= minimum_spend]
+            daily_marketing_spend = len(daily_qualifying_txns) * reward_amount
+        else:
+            daily_marketing_spend = 0.0
         
         # New vs Returning users for this day
         daily_new_users = 0
         daily_returning_users = 0
         
-        for user_id in daily_txns['user_id'].unique():
-            key = (restaurant_name, user_id)
-            if key in user_first_transaction:
-                first_txn_date = user_first_transaction[key]
-                if first_txn_date >= effective_day_start:
-                    daily_new_users += 1
+        if has_daily_transactions:
+            for user_id in daily_txns['user_id'].unique():
+                key = (match_key, user_id)
+                if key in user_first_transaction:
+                    first_txn_date = user_first_transaction[key]
+                    # User is new if their first transaction was during the activation period
+                    if first_txn_date >= start_dt and first_txn_date <= end_dt:
+                        daily_new_users += 1
+                    else:
+                        daily_returning_users += 1
                 else:
-                    daily_returning_users += 1
-            else:
-                daily_new_users += 1
+                    daily_new_users += 1
         
-        daily_new_user_percentage = (daily_new_users / daily_unique_users * 100) if daily_unique_users > 0 else 0.0
+        daily_new_user_percentage = (daily_new_users / daily_unique_users * 100) if daily_unique_users > 0 else None
         
         # Daily baseline comparison (same day-of-week, previous 4 weeks)
-        daily_baseline_tpv_values = []
-        daily_baseline_median_values = []
+        daily_tpv_vs_baseline = None
+        daily_median_check_vs_baseline = None
         
-        for week_offset in range(1, 5):
-            baseline_day_start = effective_day_start - timedelta(weeks=week_offset)
-            baseline_day_end = effective_day_end - timedelta(weeks=week_offset)
+        if has_daily_transactions:
+            daily_baseline_tpv_values = []
+            daily_baseline_median_values = []
             
-            # Skip if baseline period overlaps with any activation
-            if is_in_activation_period(match_key, baseline_day_start, baseline_day_end):
-                continue
+            for week_offset in range(1, 5):
+                baseline_day_start = effective_day_start - timedelta(weeks=week_offset)
+                baseline_day_end = effective_day_end - timedelta(weeks=week_offset)
+                
+                # Skip if baseline period overlaps with any activation
+                if is_in_activation_period(match_key, baseline_day_start, baseline_day_end):
+                    continue
+                
+                baseline_day_txns = transactions[
+                    (transactions['match_key'] == match_key) &
+                    (transactions['created_at_dt'] >= baseline_day_start) &
+                    (transactions['created_at_dt'] <= baseline_day_end)
+                ]
+                
+                if len(baseline_day_txns) > 0:
+                    daily_baseline_tpv_values.append(baseline_day_txns['amount'].sum())
+                    daily_baseline_median_values.append(baseline_day_txns['amount'].median())
             
-            baseline_day_txns = transactions[
-                (transactions['match_key'] == match_key) &
-                (transactions['created_at_dt'] >= baseline_day_start) &
-                (transactions['created_at_dt'] <= baseline_day_end)
-            ]
+            # Calculate daily baseline comparison
+            if len(daily_baseline_tpv_values) > 0:
+                avg_daily_baseline_tpv = np.mean(daily_baseline_tpv_values)
+                if avg_daily_baseline_tpv > 0:
+                    daily_tpv_vs_baseline = ((daily_total_tpv - avg_daily_baseline_tpv) / avg_daily_baseline_tpv) * 100
+                else:
+                    daily_tpv_vs_baseline = 0.0 if daily_total_tpv == 0 else 999.0
             
-            if len(baseline_day_txns) > 0:
-                daily_baseline_tpv_values.append(baseline_day_txns['amount'].sum())
-                daily_baseline_median_values.append(baseline_day_txns['amount'].median())
-        
-        # Calculate daily baseline comparison
-        if len(daily_baseline_tpv_values) > 0:
-            avg_daily_baseline_tpv = np.mean(daily_baseline_tpv_values)
-            if avg_daily_baseline_tpv > 0:
-                daily_tpv_vs_baseline = ((daily_total_tpv - avg_daily_baseline_tpv) / avg_daily_baseline_tpv) * 100
-            else:
-                daily_tpv_vs_baseline = 0.0 if daily_total_tpv == 0 else 999.0
-        else:
-            daily_tpv_vs_baseline = None
-        
-        if len(daily_baseline_median_values) > 0:
-            daily_baseline_median_check = np.median(daily_baseline_median_values)
-            if daily_baseline_median_check > 0:
-                daily_median_check_vs_baseline = ((daily_median_check - daily_baseline_median_check) / daily_baseline_median_check) * 100
-            else:
-                daily_median_check_vs_baseline = 0.0 if daily_median_check == 0 else 999.0
-        else:
-            daily_median_check_vs_baseline = None
+            if len(daily_baseline_median_values) > 0:
+                daily_baseline_median_check = np.median(daily_baseline_median_values)
+                if daily_baseline_median_check > 0:
+                    daily_median_check_vs_baseline = ((daily_median_check - daily_baseline_median_check) / daily_baseline_median_check) * 100
+                else:
+                    daily_median_check_vs_baseline = 0.0 if daily_median_check == 0 else 999.0
         
         # Store daily results
         daily_results.append({
@@ -570,14 +589,15 @@ for idx, activation in spend_activations.iterrows():
             'activation_start': start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': daily_unique_users,
-            'total_tpv': round(daily_total_tpv, 2),
+            'total_tpv': round(daily_total_tpv, 2) if has_daily_transactions else 0.0,
             'tpv_vs_baseline': round(daily_tpv_vs_baseline, 2) if daily_tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(daily_median_check_vs_baseline, 2) if daily_median_check_vs_baseline is not None else None,
             'marketing_spend': round(daily_marketing_spend, 2),
             'remaining_group_budget': round(remaining_group_budget, 2),
             'new_users_count': daily_new_users,
             'returning_users_count': daily_returning_users,
-            'new_user_percentage': round(daily_new_user_percentage, 2)
+            'new_user_percentage': round(daily_new_user_percentage, 2) if daily_new_user_percentage is not None else None,
+            'notes': daily_notes
         })
         
         current_day += timedelta(days=1)
@@ -606,14 +626,16 @@ print(f"  Daily output saved to: {daily_output_file}")
 
 print(f"\nWeekly Summary Statistics:")
 print(f"  Total weekly entries: {len(weekly_df)}")
+print(f"  Activations with zero transactions: {len(weekly_df[weekly_df['notes'] != ''])}")
 print(f"  Total marketing spend: ${weekly_df['marketing_spend'].sum():,.2f}")
-print(f"  Average TPV per week: ${weekly_df['total_tpv'].mean():,.2f}")
-print(f"  Average users per week: {weekly_df['unique_users_count'].mean():.1f}")
-print(f"  Average new user percentage: {weekly_df['new_user_percentage'].mean():.1f}%")
+print(f"  Average TPV per week: ${weekly_df[weekly_df['total_tpv'] > 0]['total_tpv'].mean():,.2f}")
+print(f"  Average users per week: {weekly_df[weekly_df['unique_users_count'] > 0]['unique_users_count'].mean():.1f}")
+print(f"  Average new user percentage: {weekly_df[weekly_df['new_user_percentage'].notna()]['new_user_percentage'].mean():.1f}%")
 
 print(f"\nDaily Summary Statistics:")
 print(f"  Total daily entries: {len(daily_df)}")
+print(f"  Days with zero transactions: {len(daily_df[daily_df['notes'] != ''])}")
 print(f"  Total marketing spend: ${daily_df['marketing_spend'].sum():,.2f}")
-print(f"  Average TPV per day: ${daily_df['total_tpv'].mean():,.2f}")
-print(f"  Average users per day: {daily_df['unique_users_count'].mean():.1f}")
-print(f"  Average new user percentage: {daily_df['new_user_percentage'].mean():.1f}%")
+print(f"  Average TPV per day: ${daily_df[daily_df['total_tpv'] > 0]['total_tpv'].mean():,.2f}")
+print(f"  Average users per day: {daily_df[daily_df['unique_users_count'] > 0]['unique_users_count'].mean():.1f}")
+print(f"  Average new user percentage: {daily_df[daily_df['new_user_percentage'].notna()]['new_user_percentage'].mean():.1f}%")
