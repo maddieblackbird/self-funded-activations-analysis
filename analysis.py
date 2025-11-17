@@ -166,20 +166,20 @@ if len(spend_activations) == 0:
     # Empty weekly file
     weekly_empty_df = pd.DataFrame(columns=[
         'week', 'activation_id', 'restaurant_name', 'location_name', 'activation_description',
-        'activation_start', 'activation_end', 'unique_users_count', 'unique_users_count_REDEEMED',
-        'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
-        'remaining_group_budget', 'new_users_count', 'returning_users_count',
-        'new_user_percentage', 'notes'
+        'minimum_spend_threshold', 'reward_amount', 'activation_start', 'activation_end',
+        'unique_users_count', 'unique_users_count_REDEEMED', 'total_tpv', 'tpv_vs_baseline',
+        'median_check_vs_baseline', 'marketing_spend', 'remaining_group_budget', 'new_users_count',
+        'returning_users_count', 'new_user_percentage', 'notes'
     ])
     weekly_empty_df.to_csv('activation_performance_analysis_weekly.csv', index=False)
     
     # Empty daily file
     daily_empty_df = pd.DataFrame(columns=[
         'date', 'day_of_week', 'activation_id', 'restaurant_name', 'location_name', 
-        'activation_description', 'activation_start', 'activation_end', 'unique_users_count',
-        'unique_users_count_REDEEMED', 'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline',
-        'marketing_spend', 'remaining_group_budget', 'new_users_count', 'returning_users_count',
-        'new_user_percentage', 'notes'
+        'activation_description', 'minimum_spend_threshold', 'reward_amount', 'activation_start',
+        'activation_end', 'unique_users_count', 'unique_users_count_REDEEMED', 'total_tpv',
+        'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend', 'remaining_group_budget',
+        'new_users_count', 'returning_users_count', 'new_user_percentage', 'notes'
     ])
     daily_empty_df.to_csv('activation_performance_analysis_daily.csv', index=False)
     
@@ -543,6 +543,8 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'restaurant_name': restaurant_name,
             'location_name': location_name,
             'activation_description': description,
+            'minimum_spend_threshold': minimum_spend,
+            'reward_amount': reward_amount,
             'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': unique_users,
@@ -707,6 +709,8 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'restaurant_name': restaurant_name,
             'location_name': location_name,
             'activation_description': description,
+            'minimum_spend_threshold': minimum_spend,
+            'reward_amount': reward_amount,
             'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': daily_unique_users,
