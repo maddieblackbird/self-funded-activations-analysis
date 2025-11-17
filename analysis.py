@@ -166,8 +166,8 @@ if len(spend_activations) == 0:
     # Empty weekly file
     weekly_empty_df = pd.DataFrame(columns=[
         'week', 'activation_id', 'restaurant_name', 'location_name', 'activation_description',
-        'activation_start', 'activation_end', 'unique_users_count', 'total_tpv',
-        'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
+        'activation_start', 'activation_end', 'unique_users_count', 'unique_users_count_REDEEMED',
+        'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
         'remaining_group_budget', 'new_users_count', 'returning_users_count',
         'new_user_percentage', 'notes'
     ])
@@ -176,9 +176,9 @@ if len(spend_activations) == 0:
     # Empty daily file
     daily_empty_df = pd.DataFrame(columns=[
         'date', 'day_of_week', 'activation_id', 'restaurant_name', 'location_name', 
-        'activation_description', 'activation_start', 'activation_end', 'unique_users_count', 
-        'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
-        'remaining_group_budget', 'new_users_count', 'returning_users_count',
+        'activation_description', 'activation_start', 'activation_end', 'unique_users_count',
+        'unique_users_count_REDEEMED', 'total_tpv', 'tpv_vs_baseline', 'median_check_vs_baseline',
+        'marketing_spend', 'remaining_group_budget', 'new_users_count', 'returning_users_count',
         'new_user_percentage', 'notes'
     ])
     daily_empty_df.to_csv('activation_performance_analysis_daily.csv', index=False)
@@ -351,12 +351,45 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         else:
             median_check = None
         
-        # Calculate marketing spend (transactions meeting minimum spend)
+        # Calculate marketing spend (group transactions by user within 1-hour windows)
         if has_transactions:
-            qualifying_txns = matching_txns[matching_txns['amount'] >= minimum_spend]
-            marketing_spend = len(qualifying_txns) * reward_amount
+            # Group transactions by user and check if combined amounts within 1-hour windows meet threshold
+            qualifying_redemptions = 0
+            redeemed_users = set()
+            
+            for user_id in matching_txns['user_id'].unique():
+                user_txns = matching_txns[matching_txns['user_id'] == user_id].sort_values('created_at_dt')
+                
+                # Track which transactions have been used in a qualifying group
+                used_indices = set()
+                
+                for idx, txn in user_txns.iterrows():
+                    if idx in used_indices:
+                        continue
+                    
+                    # Get transactions within 1 hour window
+                    window_start = txn['created_at_dt']
+                    window_end = window_start + timedelta(hours=1)
+                    
+                    window_txns = user_txns[
+                        (user_txns['created_at_dt'] >= window_start) &
+                        (user_txns['created_at_dt'] < window_end) &
+                        (~user_txns.index.isin(used_indices))
+                    ]
+                    
+                    window_total = window_txns['amount'].sum()
+                    
+                    # If this window meets the minimum spend, count as a redemption
+                    if window_total >= minimum_spend:
+                        qualifying_redemptions += 1
+                        redeemed_users.add(user_id)
+                        used_indices.update(window_txns.index.tolist())
+            
+            marketing_spend = qualifying_redemptions * reward_amount
+            unique_users_redeemed = len(redeemed_users)
         else:
             marketing_spend = 0.0
+            unique_users_redeemed = 0
         
         # New vs Returning users
         new_users = 0
@@ -451,16 +484,44 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             group_match_key = group_act['match_key']
             group_start = group_act['start_dt']
             group_end = group_act['end_dt']
+            group_min_spend = group_act['minimum_spend']
+            group_reward = group_act['reward_amount']
             
             group_txns = transactions[
                 (transactions['match_key'] == group_match_key) &
                 (transactions['created_at_dt'] >= group_start) &
-                (transactions['created_at_dt'] <= group_end) &
-                (transactions['amount'] >= group_act['minimum_spend'])
+                (transactions['created_at_dt'] <= group_end)
             ]
             
-            group_spend = len(group_txns) * group_act['reward_amount']
-            total_group_spend += group_spend
+            # Calculate qualifying redemptions using 1-hour window logic
+            if len(group_txns) > 0:
+                group_qualifying_redemptions = 0
+                
+                for user_id in group_txns['user_id'].unique():
+                    user_group_txns = group_txns[group_txns['user_id'] == user_id].sort_values('created_at_dt')
+                    used_indices = set()
+                    
+                    for idx, txn in user_group_txns.iterrows():
+                        if idx in used_indices:
+                            continue
+                        
+                        window_start = txn['created_at_dt']
+                        window_end = window_start + timedelta(hours=1)
+                        
+                        window_txns = user_group_txns[
+                            (user_group_txns['created_at_dt'] >= window_start) &
+                            (user_group_txns['created_at_dt'] < window_end) &
+                            (~user_group_txns.index.isin(used_indices))
+                        ]
+                        
+                        window_total = window_txns['amount'].sum()
+                        
+                        if window_total >= group_min_spend:
+                            group_qualifying_redemptions += 1
+                            used_indices.update(window_txns.index.tolist())
+                
+                group_spend = group_qualifying_redemptions * group_reward
+                total_group_spend += group_spend
         
         remaining_group_budget = initial_budget - total_group_spend if initial_budget > 0 else 0.0
         
@@ -477,6 +538,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': unique_users,
+            'unique_users_count_REDEEMED': unique_users_redeemed,
             'total_tpv': round(total_tpv, 2) if has_transactions else 0.0,
             'tpv_vs_baseline': round(tpv_vs_baseline, 2) if tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(median_check_vs_baseline, 2) if median_check_vs_baseline is not None else None,
@@ -529,12 +591,45 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         else:
             daily_median_check = None
         
-        # Calculate daily marketing spend
+        # Calculate daily marketing spend (group transactions by user within 1-hour windows)
         if has_daily_transactions:
-            daily_qualifying_txns = daily_txns[daily_txns['amount'] >= minimum_spend]
-            daily_marketing_spend = len(daily_qualifying_txns) * reward_amount
+            # Group transactions by user and check if combined amounts within 1-hour windows meet threshold
+            daily_qualifying_redemptions = 0
+            daily_redeemed_users = set()
+            
+            for user_id in daily_txns['user_id'].unique():
+                user_daily_txns = daily_txns[daily_txns['user_id'] == user_id].sort_values('created_at_dt')
+                
+                # Track which transactions have been used in a qualifying group
+                used_indices = set()
+                
+                for idx, txn in user_daily_txns.iterrows():
+                    if idx in used_indices:
+                        continue
+                    
+                    # Get transactions within 1 hour window
+                    window_start = txn['created_at_dt']
+                    window_end = window_start + timedelta(hours=1)
+                    
+                    window_txns = user_daily_txns[
+                        (user_daily_txns['created_at_dt'] >= window_start) &
+                        (user_daily_txns['created_at_dt'] < window_end) &
+                        (~user_daily_txns.index.isin(used_indices))
+                    ]
+                    
+                    window_total = window_txns['amount'].sum()
+                    
+                    # If this window meets the minimum spend, count as a redemption
+                    if window_total >= minimum_spend:
+                        daily_qualifying_redemptions += 1
+                        daily_redeemed_users.add(user_id)
+                        used_indices.update(window_txns.index.tolist())
+            
+            daily_marketing_spend = daily_qualifying_redemptions * reward_amount
+            daily_unique_users_redeemed = len(daily_redeemed_users)
         else:
             daily_marketing_spend = 0.0
+            daily_unique_users_redeemed = 0
         
         # New vs Returning users for this day
         daily_new_users = 0
@@ -607,6 +702,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': daily_unique_users,
+            'unique_users_count_REDEEMED': daily_unique_users_redeemed,
             'total_tpv': round(daily_total_tpv, 2) if has_daily_transactions else 0.0,
             'tpv_vs_baseline': round(daily_tpv_vs_baseline, 2) if daily_tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(daily_median_check_vs_baseline, 2) if daily_median_check_vs_baseline is not None else None,
