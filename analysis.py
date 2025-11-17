@@ -264,36 +264,55 @@ for _, txn in transactions_sorted.iterrows():
 # ============================================================================
 
 print("\nAnalyzing activations...")
+
+# First, create unique groupings by (restaurant_name, location_name, activation_description)
+spend_activations['grouping_key'] = (
+    spend_activations['restaurant_name'].fillna('') + '||' +
+    spend_activations['location_name'].fillna('') + '||' +
+    spend_activations['description'].fillna('')
+)
+
+unique_groupings = spend_activations.groupby('grouping_key')
+
 weekly_results = []
 daily_results = []
 
-for idx, activation in spend_activations.iterrows():
-    if idx % 100 == 0:
-        print(f"  Processing activation {idx}/{len(spend_activations)}...")
+print(f"Found {len(unique_groupings)} unique restaurant/location/description groupings")
+
+for grouping_idx, (grouping_key, group_activations) in enumerate(unique_groupings):
+    if grouping_idx % 100 == 0:
+        print(f"  Processing grouping {grouping_idx}/{len(unique_groupings)}...")
     
-    # Extract activation details
-    activation_id = activation['id']
-    restaurant_name = activation['restaurant_name']
-    location_name = activation['location_name']
-    restaurant_id = activation['restaurant_id']
-    restaurant_group_id = activation['restaurant_group_id']
-    match_key = activation['match_key']
-    start_dt = activation['start_dt']
-    end_dt = activation['end_dt']
-    minimum_spend = activation['minimum_spend']
-    reward_amount = activation['reward_amount']
-    description = activation['description']
+    # Extract common details from the group (use first activation as reference)
+    first_activation = group_activations.iloc[0]
+    restaurant_name = first_activation['restaurant_name']
+    location_name = first_activation['location_name']
+    restaurant_id = first_activation['restaurant_id']
+    restaurant_group_id = first_activation['restaurant_group_id']
+    match_key = first_activation['match_key']
+    description = first_activation['description']
+    minimum_spend = first_activation['minimum_spend']
+    reward_amount = first_activation['reward_amount']
+    initial_budget = first_activation['initial_budget']
     
-    # Determine which week(s) this activation falls into
+    # Get the overall date range across all activations in this group
+    overall_start_dt = group_activations['start_dt'].min()
+    overall_end_dt = group_activations['end_dt'].max()
+    
+    # Collect all activation IDs in this group
+    activation_ids = group_activations['id'].tolist()
+    activation_id_display = ', '.join(map(str, activation_ids))
+    
+    # Determine which week(s) this grouping overlaps with
     weeks_to_analyze = []
-    if start_dt <= WEEK1_END and end_dt >= WEEK1_START:
+    if overall_start_dt <= WEEK1_END and overall_end_dt >= WEEK1_START:
         weeks_to_analyze.append({
             'week_number': 1,
             'week_label': 'Week 1',
             'week_start': WEEK1_START,
             'week_end': WEEK1_END
         })
-    if start_dt <= WEEK2_END and end_dt >= WEEK2_START:
+    if overall_start_dt <= WEEK2_END and overall_end_dt >= WEEK2_START:
         weeks_to_analyze.append({
             'week_number': 2,
             'week_label': 'Week 2',
@@ -307,9 +326,9 @@ for idx, activation in spend_activations.iterrows():
         week_start = week_info['week_start']
         week_end = week_info['week_end']
         
-        # Get the effective date range for this activation within this week
-        effective_start = max(start_dt, week_start)
-        effective_end = min(end_dt, week_end)
+        # Get the effective date range for this grouping within this week
+        effective_start = max(overall_start_dt, week_start)
+        effective_end = min(overall_end_dt, week_end)
         
         # Match transactions during activation period AND within this specific week
         matching_txns = transactions[
@@ -349,7 +368,7 @@ for idx, activation in spend_activations.iterrows():
                 if key in user_first_transaction:
                     first_txn_date = user_first_transaction[key]
                     # User is new if their first transaction was during the activation period
-                    if first_txn_date >= start_dt and first_txn_date <= end_dt:
+                    if first_txn_date >= overall_start_dt and first_txn_date <= overall_end_dt:
                         new_users += 1
                     else:
                         returning_users += 1
@@ -413,8 +432,7 @@ for idx, activation in spend_activations.iterrows():
             activations['restaurant_group_id'] == restaurant_group_id
         ]
         
-        # Get initial budget for this group
-        initial_budget = activation['initial_budget']
+        # Initial budget was already extracted earlier from first_activation
         
         # Calculate total marketing spend for group (only rewards earned on/after Oct 13, 2025)
         oct_13_2025 = datetime(2025, 10, 13)
@@ -452,12 +470,12 @@ for idx, activation in spend_activations.iterrows():
         
         weekly_results.append({
             'week': week_label,
-            'activation_id': activation_id,
+            'activation_id': activation_id_display,
             'restaurant_name': restaurant_name,
             'location_name': location_name,
             'activation_description': description,
-            'activation_start': start_dt.strftime('%Y-%m-%d %H:%M:%S'),
-            'activation_end': end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': unique_users,
             'total_tpv': round(total_tpv, 2) if has_transactions else 0.0,
             'tpv_vs_baseline': round(tpv_vs_baseline, 2) if tpv_vs_baseline is not None else None,
@@ -474,9 +492,9 @@ for idx, activation in spend_activations.iterrows():
     # DAILY ANALYSIS
     # ========================================================================
     
-    # Analyze each day the activation was active
-    current_day = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    activation_end_day = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    # Analyze each day the grouping was active (across all activations in the group)
+    current_day = overall_start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    activation_end_day = overall_end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
     
     while current_day <= activation_end_day:
         day_start = current_day
@@ -488,8 +506,8 @@ for idx, activation in spend_activations.iterrows():
             continue
         
         # Get the effective date range for this day
-        effective_day_start = max(day_start, start_dt, ANALYSIS_START)
-        effective_day_end = min(day_end, end_dt, ANALYSIS_END)
+        effective_day_start = max(day_start, overall_start_dt, ANALYSIS_START)
+        effective_day_end = min(day_end, overall_end_dt, ANALYSIS_END)
         
         # Match transactions for this day
         daily_txns = transactions[
@@ -528,7 +546,7 @@ for idx, activation in spend_activations.iterrows():
                 if key in user_first_transaction:
                     first_txn_date = user_first_transaction[key]
                     # User is new if their first transaction was during the activation period
-                    if first_txn_date >= start_dt and first_txn_date <= end_dt:
+                    if first_txn_date >= overall_start_dt and first_txn_date <= overall_end_dt:
                         daily_new_users += 1
                     else:
                         daily_returning_users += 1
@@ -582,12 +600,12 @@ for idx, activation in spend_activations.iterrows():
         daily_results.append({
             'date': current_day.strftime('%Y-%m-%d'),
             'day_of_week': current_day.strftime('%A'),
-            'activation_id': activation_id,
+            'activation_id': activation_id_display,
             'restaurant_name': restaurant_name,
             'location_name': location_name,
             'activation_description': description,
-            'activation_start': start_dt.strftime('%Y-%m-%d %H:%M:%S'),
-            'activation_end': end_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'activation_start': overall_start_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            'activation_end': overall_end_dt.strftime('%Y-%m-%d %H:%M:%S'),
             'unique_users_count': daily_unique_users,
             'total_tpv': round(daily_total_tpv, 2) if has_daily_transactions else 0.0,
             'tpv_vs_baseline': round(daily_tpv_vs_baseline, 2) if daily_tpv_vs_baseline is not None else None,
