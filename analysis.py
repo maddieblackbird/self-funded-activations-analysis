@@ -265,11 +265,12 @@ for _, txn in transactions_sorted.iterrows():
 
 print("\nAnalyzing activations...")
 
-# First, create unique groupings by (restaurant_name, location_name, activation_description)
+# First, create unique groupings by (restaurant_name, location_name, minimum_spend, reward_amount)
 spend_activations['grouping_key'] = (
-    spend_activations['restaurant_name'].fillna('') + '||' +
-    spend_activations['location_name'].fillna('') + '||' +
-    spend_activations['description'].fillna('')
+    spend_activations['restaurant_name'].fillna('').astype(str) + '||' +
+    spend_activations['location_name'].fillna('').astype(str) + '||' +
+    spend_activations['minimum_spend'].astype(str) + '||' +
+    spend_activations['reward_amount'].astype(str)
 )
 
 unique_groupings = spend_activations.groupby('grouping_key')
@@ -277,7 +278,7 @@ unique_groupings = spend_activations.groupby('grouping_key')
 weekly_results = []
 daily_results = []
 
-print(f"Found {len(unique_groupings)} unique restaurant/location/description groupings")
+print(f"Found {len(unique_groupings)} unique restaurant/location/offer groupings")
 
 for grouping_idx, (grouping_key, group_activations) in enumerate(unique_groupings):
     if grouping_idx % 100 == 0:
@@ -290,10 +291,17 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
     restaurant_id = first_activation['restaurant_id']
     restaurant_group_id = first_activation['restaurant_group_id']
     match_key = first_activation['match_key']
-    description = first_activation['description']
     minimum_spend = first_activation['minimum_spend']
     reward_amount = first_activation['reward_amount']
     initial_budget = first_activation['initial_budget']
+    
+    # Combine all unique descriptions (in case they're phrased differently)
+    unique_descriptions = group_activations['description'].unique()
+    if len(unique_descriptions) == 1:
+        description = unique_descriptions[0]
+    else:
+        # Use the shortest description (usually the most concise)
+        description = min(unique_descriptions, key=len)
     
     # Get the overall date range across all activations in this group
     overall_start_dt = group_activations['start_dt'].min()
