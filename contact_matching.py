@@ -3,10 +3,10 @@
 Restaurant Email Matcher
 
 PURPOSE: Match restaurants from activation_performance_analysis_weekly.csv to contacts in all_contacts.csv
-and append email addresses for 100% confidence matches.
+and append email addresses for matches above 70% confidence.
 
 For each restaurant (restaurant_name + location_name), find matching contacts and collect their emails.
-Only emails from 100% confidence matches are included in the "emails" column.
+Emails from all matches with confidence >= 70% are included in the "emails" column.
 """
 
 import csv
@@ -352,11 +352,11 @@ def main():
         perfect_matches = [m for m in matches if m['confidence'] >= 0.999]  # 100% or very close
         partial_matches = [m for m in matches if m['confidence'] < 0.999]
         
-        # Collect emails from perfect matches only
-        perfect_match_emails = []
-        for match in perfect_matches:
+        # Collect emails from all matches above 70% confidence
+        all_match_emails = []
+        for match in matches:  # Include all matches (already filtered to >= 70% by find_matching_contacts)
             if match['email']:
-                perfect_match_emails.append(match['email'])
+                all_match_emails.append(match['email'])
         
         # Display results
         if perfect_matches:
@@ -377,15 +377,15 @@ def main():
                 partial_match_count += 1
         
         # Populate result
-        row['emails'] = ', '.join(perfect_match_emails) if perfect_match_emails else ''
+        row['emails'] = ', '.join(all_match_emails) if all_match_emails else ''
         
         if perfect_matches:
             row['email_match_confidence'] = '100%'
-            row['email_match_notes'] = f"{len(perfect_match_emails)} email(s) from {len(perfect_matches)} perfect match(es)"
+            row['email_match_notes'] = f"{len(all_match_emails)} email(s) from {len(matches)} match(es) (including {len(perfect_matches)} perfect)"
         elif partial_matches:
             best_partial = max(partial_matches, key=lambda x: x['confidence'])
             row['email_match_confidence'] = f"{best_partial['confidence']:.1%}"
-            row['email_match_notes'] = f"Best match below 100%: {best_partial['restaurant_name']}"
+            row['email_match_notes'] = f"{len(all_match_emails)} email(s) from {len(matches)} match(es) above 70%"
         else:
             row['email_match_confidence'] = 'No match'
             row['email_match_notes'] = 'No matches found'
