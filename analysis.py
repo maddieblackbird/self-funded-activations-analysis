@@ -1,6 +1,10 @@
 """
 Activation Performance Analysis Script
 Analyzes promotional activation performance for the last two complete calendar weeks
+
+FIXED:
+1. 1-hour window now includes transactions at exactly 1 hour (changed < to <=)
+2. New users are ONLY those who have NEVER transacted at this restaurant/location before
 """
 
 import pandas as pd
@@ -303,7 +307,16 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         # Use the shortest description (usually the most concise)
         description = min(unique_descriptions, key=len)
     
-    # Get the overall date range across all activations in this group
+    # Collect all individual activation periods (not continuous range!)
+    activation_periods_list = []
+    for _, act in group_activations.iterrows():
+        activation_periods_list.append({
+            'start': act['start_dt'],
+            'end': act['end_dt'],
+            'id': act['id']
+        })
+    
+    # Get the overall date range for display purposes only
     overall_start_dt = group_activations['start_dt'].min()
     overall_end_dt = group_activations['end_dt'].max()
     
@@ -334,16 +347,32 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         week_start = week_info['week_start']
         week_end = week_info['week_end']
         
-        # Get the effective date range for this grouping within this week
-        effective_start = max(overall_start_dt, week_start)
-        effective_end = min(overall_end_dt, week_end)
+        # Get transactions during ANY of the activation periods within this week
+        matching_txns = pd.DataFrame()
         
-        # Match transactions during activation period AND within this specific week
-        matching_txns = transactions[
-            (transactions['match_key'] == match_key) &
-            (transactions['created_at_dt'] >= effective_start) &
-            (transactions['created_at_dt'] <= effective_end)
-        ].copy()
+        for period in activation_periods_list:
+            period_start = period['start']
+            period_end = period['end']
+            
+            # Only consider the intersection with this week
+            effective_period_start = max(period_start, week_start)
+            effective_period_end = min(period_end, week_end)
+            
+            # Skip if this period doesn't overlap with this week
+            if effective_period_start > effective_period_end:
+                continue
+            
+            # Get transactions during this specific activation window
+            period_txns = transactions[
+                (transactions['match_key'] == match_key) &
+                (transactions['created_at_dt'] >= effective_period_start) &
+                (transactions['created_at_dt'] <= effective_period_end)
+            ]
+            
+            matching_txns = pd.concat([matching_txns, period_txns], ignore_index=True)
+        
+        # Remove duplicate transactions (in case periods overlap)
+        matching_txns = matching_txns.drop_duplicates().copy()
         
         # Check if there are zero transactions
         has_transactions = len(matching_txns) > 0
@@ -359,9 +388,8 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         else:
             median_check = None
         
-        # Calculate marketing spend (group transactions by user within 1-hour windows)
+        # FIXED: Calculate marketing spend (group transactions by user within 1-hour windows)
         if has_transactions:
-            # Group transactions by user and check if combined amounts within 1-hour windows meet threshold
             qualifying_redemptions = 0
             redeemed_users = set()
             
@@ -375,13 +403,14 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
                     if idx in used_indices:
                         continue
                     
-                    # Get transactions within 1 hour window
+                    # FIXED: Window is 1 hour from THIS (first) transaction
                     window_start = txn['created_at_dt']
                     window_end = window_start + timedelta(hours=1)
                     
+                    # Get ALL subsequent transactions within 1 hour of this FIRST transaction
                     window_txns = user_txns[
                         (user_txns['created_at_dt'] >= window_start) &
-                        (user_txns['created_at_dt'] < window_end) &
+                        (user_txns['created_at_dt'] <= window_end) &  # FIXED: Changed < to <= to include exactly 1 hour
                         (~user_txns.index.isin(used_indices))
                     ]
                     
@@ -399,22 +428,18 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             marketing_spend = 0.0
             unique_users_redeemed = 0
         
-        # New vs Returning users
+        # FIXED: New vs Returning users
         new_users = 0
         returning_users = 0
         
         if has_transactions:
             for user_id in matching_txns['user_id'].unique():
                 key = (match_key, user_id)
-                if key in user_first_transaction:
-                    first_txn_date = user_first_transaction[key]
-                    # User is new if their first transaction was during the activation period
-                    if first_txn_date >= overall_start_dt and first_txn_date <= overall_end_dt:
-                        new_users += 1
-                    else:
-                        returning_users += 1
+                # FIXED: User is new ONLY if they have NEVER transacted at this restaurant/location before
+                if key not in user_first_transaction:
+                    new_users += 1  # No prior history = truly new user
                 else:
-                    new_users += 1  # No prior history
+                    returning_users += 1  # Has any prior history = returning user
         
         new_user_percentage = (new_users / unique_users * 100) if unique_users > 0 else None
         
@@ -426,13 +451,13 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         median_check_vs_baseline = None
         
         if has_transactions:
-            # Calculate baseline from previous 4 weeks (same day-of-week)
+            # Calculate baseline from previous 4 weeks (same days in prior weeks)
             baseline_tpv_values = []
             baseline_median_values = []  # Store median from each baseline week
             
             for week_offset in range(1, 5):  # Previous 4 weeks
-                baseline_start = effective_start - timedelta(weeks=week_offset)
-                baseline_end = effective_end - timedelta(weeks=week_offset)
+                baseline_start = week_start - timedelta(weeks=week_offset)
+                baseline_end = week_end - timedelta(weeks=week_offset)
                 
                 # Skip if this baseline period overlaps with any activation
                 if is_in_activation_period(match_key, baseline_start, baseline_end):
@@ -469,7 +494,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         # ====================================================================
         
         # Get all activations for this restaurant group
-        group_activations = activations[
+        group_activations_all = activations[
             activations['restaurant_group_id'] == restaurant_group_id
         ]
         
@@ -479,7 +504,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         oct_13_2025 = datetime(2025, 10, 13)
         total_group_spend = 0.0
         
-        for _, group_act in group_activations.iterrows():
+        for _, group_act in group_activations_all.iterrows():
             if pd.isna(group_act['minimum_spend']) or pd.isna(group_act['reward_amount']):
                 continue
             
@@ -518,7 +543,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
                         
                         window_txns = user_group_txns[
                             (user_group_txns['created_at_dt'] >= window_start) &
-                            (user_group_txns['created_at_dt'] < window_end) &
+                            (user_group_txns['created_at_dt'] <= window_end) &  # FIXED: <= instead of <
                             (~user_group_txns.index.isin(used_indices))
                         ]
                         
@@ -564,29 +589,50 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
     # DAILY ANALYSIS
     # ========================================================================
     
-    # Analyze each day the grouping was active (across all activations in the group)
-    current_day = overall_start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    activation_end_day = overall_end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    # Collect all unique days when activations were active
+    active_days = set()
+    for period in activation_periods_list:
+        current = period['start'].replace(hour=0, minute=0, second=0, microsecond=0)
+        end = period['end'].replace(hour=0, minute=0, second=0, microsecond=0)
+        while current <= end:
+            active_days.add(current)
+            current += timedelta(days=1)
     
-    while current_day <= activation_end_day:
+    # Analyze each active day
+    for current_day in sorted(active_days):
         day_start = current_day
         day_end = current_day.replace(hour=23, minute=59, second=59, microsecond=999999)
         
         # Only analyze days within the analysis period
         if day_end < ANALYSIS_START or day_start > ANALYSIS_END:
-            current_day += timedelta(days=1)
             continue
         
-        # Get the effective date range for this day
-        effective_day_start = max(day_start, overall_start_dt, ANALYSIS_START)
-        effective_day_end = min(day_end, overall_end_dt, ANALYSIS_END)
+        # Get transactions during ANY activation period on this day
+        daily_txns = pd.DataFrame()
         
-        # Match transactions for this day
-        daily_txns = transactions[
-            (transactions['match_key'] == match_key) &
-            (transactions['created_at_dt'] >= effective_day_start) &
-            (transactions['created_at_dt'] <= effective_day_end)
-        ].copy()
+        for period in activation_periods_list:
+            period_start = period['start']
+            period_end = period['end']
+            
+            # Only consider the intersection with this day
+            effective_day_start = max(day_start, period_start, ANALYSIS_START)
+            effective_day_end = min(day_end, period_end, ANALYSIS_END)
+            
+            # Skip if this period doesn't overlap with this day
+            if effective_day_start > effective_day_end:
+                continue
+            
+            # Get transactions during this specific activation window on this day
+            period_daily_txns = transactions[
+                (transactions['match_key'] == match_key) &
+                (transactions['created_at_dt'] >= effective_day_start) &
+                (transactions['created_at_dt'] <= effective_day_end)
+            ]
+            
+            daily_txns = pd.concat([daily_txns, period_daily_txns], ignore_index=True)
+        
+        # Remove duplicate transactions (in case periods overlap)
+        daily_txns = daily_txns.drop_duplicates().copy()
         
         # Check if there are zero transactions for this day
         has_daily_transactions = len(daily_txns) > 0
@@ -601,9 +647,8 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         else:
             daily_median_check = None
         
-        # Calculate daily marketing spend (group transactions by user within 1-hour windows)
+        # FIXED: Calculate daily marketing spend (group transactions by user within 1-hour windows)
         if has_daily_transactions:
-            # Group transactions by user and check if combined amounts within 1-hour windows meet threshold
             daily_qualifying_redemptions = 0
             daily_redeemed_users = set()
             
@@ -623,7 +668,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
                     
                     window_txns = user_daily_txns[
                         (user_daily_txns['created_at_dt'] >= window_start) &
-                        (user_daily_txns['created_at_dt'] < window_end) &
+                        (user_daily_txns['created_at_dt'] <= window_end) &  # FIXED: <= instead of <
                         (~user_daily_txns.index.isin(used_indices))
                     ]
                     
@@ -641,22 +686,18 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             daily_marketing_spend = 0.0
             daily_unique_users_redeemed = 0
         
-        # New vs Returning users for this day
+        # FIXED: New vs Returning users for this day
         daily_new_users = 0
         daily_returning_users = 0
         
         if has_daily_transactions:
             for user_id in daily_txns['user_id'].unique():
                 key = (match_key, user_id)
-                if key in user_first_transaction:
-                    first_txn_date = user_first_transaction[key]
-                    # User is new if their first transaction was during the activation period
-                    if first_txn_date >= overall_start_dt and first_txn_date <= overall_end_dt:
-                        daily_new_users += 1
-                    else:
-                        daily_returning_users += 1
+                # FIXED: User is new ONLY if they have NEVER transacted at this restaurant/location before
+                if key not in user_first_transaction:
+                    daily_new_users += 1  # No prior history = truly new user
                 else:
-                    daily_new_users += 1
+                    daily_returning_users += 1  # Has any prior history = returning user
         
         daily_new_user_percentage = (daily_new_users / daily_unique_users * 100) if daily_unique_users > 0 else None
         
@@ -725,8 +766,6 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'new_user_percentage': round(daily_new_user_percentage, 2) if daily_new_user_percentage is not None else None,
             'notes': daily_notes
         })
-        
-        current_day += timedelta(days=1)
 
 # ============================================================================
 # OUTPUT RESULTS
