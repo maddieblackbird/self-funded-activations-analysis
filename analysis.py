@@ -5,6 +5,7 @@ Analyzes promotional activation performance for the last two complete calendar w
 FIXED:
 1. 1-hour window now includes transactions at exactly 1 hour (changed < to <=)
 2. New users are ONLY those who have NEVER transacted at this restaurant/location before
+3. Uses Claude API to parse activation descriptions when regex fails
 """
 
 import pandas as pd
@@ -12,6 +13,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import re
 from collections import defaultdict
+import os
+from anthropic import Anthropic
 
 # ============================================================================
 # CONFIGURATION & DATE SETUP
@@ -92,24 +95,85 @@ def parse_amount(amount_str):
     except:
         return 0.0
 
-def parse_spend_description(description):
+def parse_spend_description_with_claude(description, claude_client):
     """
-    Parse 'Spend $X ... get $Y' descriptions
+    Use Claude to parse activation description
+    Returns: (minimum_spend, reward_amount)
+    """
+    if not claude_client:
+        return None, None
+    
+    try:
+        prompt = f"""Parse this restaurant promotion description and extract the spend threshold and reward amount.
+
+Description: "{description}"
+
+Respond with ONLY two numbers separated by a comma:
+- First number: the minimum spend amount (just the number, no $ symbol)
+- Second number: the reward amount (just the number, no $ symbol)
+
+Example response: 25,10
+(meaning: spend $25, get $10 reward)
+
+Your response:"""
+
+        message = claude_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=50,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        response = message.content[0].text.strip()
+        
+        # Parse the response
+        parts = response.split(',')
+        if len(parts) == 2:
+            minimum_spend = float(parts[0].strip())
+            reward_amount = float(parts[1].strip())
+            return minimum_spend, reward_amount
+        
+    except Exception as e:
+        print(f"  ⚠ Claude parsing error for '{description}': {str(e)}")
+    
+    return None, None
+
+def parse_spend_description(description, claude_client=None):
+    """
+    Parse 'Spend $X ... get/receive $Y' descriptions
+    First tries regex, then falls back to Claude if needed
     Returns: (minimum_spend, reward_amount)
     """
     if pd.isna(description) or not isinstance(description, str):
         return None, None
     
-    # Pattern: "Spend $X" ... "get $Y"
+    # Try regex first (fast)
     spend_match = re.search(r'Spend\s+\$(\d+(?:\.\d+)?)', description, re.IGNORECASE)
-    reward_match = re.search(r'get\s+\$(\d+(?:\.\d+)?)', description, re.IGNORECASE)
+    reward_match = re.search(r'(?:get|receive|earn)\s+\$(\d+(?:\.\d+)?)', description, re.IGNORECASE)
     
     minimum_spend = float(spend_match.group(1)) if spend_match else None
     reward_amount = float(reward_match.group(1)) if reward_match else None
     
+    # If regex worked, return
+    if minimum_spend is not None and reward_amount is not None:
+        return minimum_spend, reward_amount
+    
+    # If regex failed and we have Claude, use Claude
+    if claude_client:
+        return parse_spend_description_with_claude(description, claude_client)
+    
     return minimum_spend, reward_amount
 
 print("Loading data files...")
+
+# Initialize Claude client for parsing
+claude_client = None
+api_key = os.environ.get('ANTHROPIC_API_KEY')
+if api_key:
+    claude_client = Anthropic(api_key=api_key)
+    print("✓ Claude API initialized for description parsing")
+else:
+    print("⚠ ANTHROPIC_API_KEY not found - will use regex only for parsing")
+    print("  Set it with: export ANTHROPIC_API_KEY='your-key-here'")
 
 # Load transactions
 transactions = pd.read_csv('all_transactions.csv', low_memory=False)
@@ -133,9 +197,36 @@ activations['initial_budget'] = activations['group_initial_budget'].apply(parse_
 
 # Parse activation descriptions
 print("Parsing activation descriptions...")
+
+# First pass: Try regex on all
 activations[['minimum_spend', 'reward_amount']] = activations['description'].apply(
-    lambda x: pd.Series(parse_spend_description(x))
+    lambda x: pd.Series(parse_spend_description(x, None))
 )
+
+# Second pass: Use Claude for failed parses (if available)
+if claude_client:
+    failed_parses = activations[
+        (activations['description'].fillna('').str.startswith('Spend $', na=False)) &
+        (activations['minimum_spend'].isna() | activations['reward_amount'].isna())
+    ]
+    
+    if len(failed_parses) > 0:
+        print(f"  ⚙ Using Claude to parse {len(failed_parses)} descriptions that regex couldn't handle...")
+        
+        for idx, row in failed_parses.iterrows():
+            min_spend, reward = parse_spend_description(row['description'], claude_client)
+            if min_spend is not None and reward is not None:
+                activations.at[idx, 'minimum_spend'] = min_spend
+                activations.at[idx, 'reward_amount'] = reward
+                print(f"    ✓ Parsed: '{row['description'][:60]}...' → ${min_spend} / ${reward}")
+            else:
+                print(f"    ✗ Failed: '{row['description'][:60]}...'")
+        
+        remaining_failed = activations[
+            (activations['description'].fillna('').str.startswith('Spend $', na=False)) &
+            (activations['minimum_spend'].isna() | activations['reward_amount'].isna())
+        ]
+        print(f"  Final: {len(remaining_failed)} descriptions could not be parsed")
 
 # ============================================================================
 # FILTER ACTIVATIONS
