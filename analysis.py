@@ -605,17 +605,23 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
         
         # Initial budget was already extracted earlier from first_activation
         
-        # Calculate total marketing spend for group (only rewards earned on/after Oct 13, 2025)
-        oct_13_2025 = datetime(2025, 10, 13)
+        # Calculate total marketing spend for group (only rewards earned on/after specific date)
+        # Special case: The Bar at The Spectator starts on Oct 26, 2025
+        # All others start on Oct 13, 2025
+        if restaurant_name == "The Bar at The Spectator":
+            budget_start_date = datetime(2025, 10, 26)
+        else:
+            budget_start_date = datetime(2025, 10, 13)
+        
         total_group_spend = 0.0
         
         for _, group_act in group_activations_all.iterrows():
             if pd.isna(group_act['minimum_spend']) or pd.isna(group_act['reward_amount']):
                 continue
             
-            # Only count rewards earned on or after Oct 13, 2025
+            # Only count rewards earned on or after the budget start date
             act_start = group_act['start_dt']
-            if pd.isna(act_start) or act_start < oct_13_2025:
+            if pd.isna(act_start) or act_start < budget_start_date:
                 continue
             
             # Get transactions for this activation
