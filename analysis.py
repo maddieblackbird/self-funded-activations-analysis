@@ -1,6 +1,6 @@
 """
 Activation Performance Analysis Script
-Analyzes promotional activation performance for the last two complete calendar weeks
+Analyzes promotional activation performance for the last three complete calendar weeks
 
 FIXED:
 1. 1-hour window now includes transactions at exactly 1 hour (changed < to <=)
@@ -22,9 +22,9 @@ from anthropic import Anthropic
 
 CURRENT_DATE = datetime.now()  
 
-# Calculate last two complete calendar weeks (Monday-Sunday)
+# Calculate last three complete calendar weeks (Monday-Sunday)
 def get_last_complete_weeks(current_date):
-    """Calculate the last two complete calendar weeks ending before current_date"""
+    """Calculate the last three complete calendar weeks ending before current_date"""
     # Find the Monday of the current week
     days_since_monday = current_date.weekday()  # Monday is 0
     current_week_monday = current_date - timedelta(days=days_since_monday)
@@ -37,24 +37,33 @@ def get_last_complete_weeks(current_date):
     second_last_week_end = last_week_start - timedelta(days=1)  # Sunday
     second_last_week_start = second_last_week_end - timedelta(days=6)  # Monday
     
+    # Third last complete week
+    third_last_week_end = second_last_week_start - timedelta(days=1)  # Sunday
+    third_last_week_start = third_last_week_end - timedelta(days=6)  # Monday
+    
     return {
-        'week1_start': second_last_week_start.replace(hour=0, minute=0, second=0),
-        'week1_end': second_last_week_end.replace(hour=23, minute=59, second=59),
-        'week2_start': last_week_start.replace(hour=0, minute=0, second=0),
-        'week2_end': last_week_end.replace(hour=23, minute=59, second=59)
+        'week1_start': third_last_week_start.replace(hour=0, minute=0, second=0),
+        'week1_end': third_last_week_end.replace(hour=23, minute=59, second=59),
+        'week2_start': second_last_week_start.replace(hour=0, minute=0, second=0),
+        'week2_end': second_last_week_end.replace(hour=23, minute=59, second=59),
+        'week3_start': last_week_start.replace(hour=0, minute=0, second=0),
+        'week3_end': last_week_end.replace(hour=23, minute=59, second=59)
     }
 
 weeks = get_last_complete_weeks(CURRENT_DATE)
 ANALYSIS_START = weeks['week1_start']
-ANALYSIS_END = weeks['week2_end']
+ANALYSIS_END = weeks['week3_end']
 WEEK1_START = weeks['week1_start']
 WEEK1_END = weeks['week1_end']
 WEEK2_START = weeks['week2_start']
 WEEK2_END = weeks['week2_end']
+WEEK3_START = weeks['week3_start']
+WEEK3_END = weeks['week3_end']
 
 print(f"Analysis Period:")
 print(f"  Week 1: {weeks['week1_start'].strftime('%B %d, %Y')} - {weeks['week1_end'].strftime('%B %d, %Y')}")
 print(f"  Week 2: {weeks['week2_start'].strftime('%B %d, %Y')} - {weeks['week2_end'].strftime('%B %d, %Y')}")
+print(f"  Week 3: {weeks['week3_start'].strftime('%B %d, %Y')} - {weeks['week3_end'].strftime('%B %d, %Y')}")
 print()
 
 # ============================================================================
@@ -262,9 +271,9 @@ if len(spend_activations) == 0:
     weekly_empty_df = pd.DataFrame(columns=[
         'week', 'activation_id', 'restaurant_name', 'location_name', 'activation_description',
         'minimum_spend_threshold', 'reward_amount', 'activation_start', 'activation_end',
-        'unique_users_count', 'unique_users_count_REDEEMED', 'total_tpv', 'tpv_vs_baseline',
-        'median_check_vs_baseline', 'marketing_spend', 'remaining_group_budget', 'new_users_count',
-        'returning_users_count', 'new_user_percentage', 'notes'
+        'unique_users_count', 'unique_users_count_REDEEMED', 'total_tpv', 'median_check',
+        'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend', 'remaining_group_budget',
+        'new_users_count', 'returning_users_count', 'new_user_percentage', 'notes'
     ])
     weekly_empty_df.to_csv('activation_performance_analysis_weekly.csv', index=False)
     
@@ -273,8 +282,9 @@ if len(spend_activations) == 0:
         'date', 'day_of_week', 'activation_id', 'restaurant_name', 'location_name', 
         'activation_description', 'minimum_spend_threshold', 'reward_amount', 'activation_start',
         'activation_end', 'unique_users_count', 'unique_users_count_REDEEMED', 'total_tpv',
-        'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend', 'remaining_group_budget',
-        'new_users_count', 'returning_users_count', 'new_user_percentage', 'notes'
+        'median_check', 'tpv_vs_baseline', 'median_check_vs_baseline', 'marketing_spend',
+        'remaining_group_budget', 'new_users_count', 'returning_users_count', 'new_user_percentage',
+        'notes'
     ])
     daily_empty_df.to_csv('activation_performance_analysis_daily.csv', index=False)
     
@@ -430,6 +440,13 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'week_label': 'Week 2',
             'week_start': WEEK2_START,
             'week_end': WEEK2_END
+        })
+    if overall_start_dt <= WEEK3_END and overall_end_dt >= WEEK3_START:
+        weeks_to_analyze.append({
+            'week_number': 3,
+            'week_label': 'Week 3',
+            'week_start': WEEK3_START,
+            'week_end': WEEK3_END
         })
     
     # Analyze performance for each week separately
@@ -686,6 +703,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'unique_users_count': unique_users,
             'unique_users_count_REDEEMED': unique_users_redeemed,
             'total_tpv': round(total_tpv, 2) if has_transactions else 0.0,
+            'median_check': round(median_check, 2) if median_check is not None else None,
             'tpv_vs_baseline': round(tpv_vs_baseline, 2) if tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(median_check_vs_baseline, 2) if median_check_vs_baseline is not None else None,
             'marketing_spend': round(marketing_spend, 2),
@@ -882,6 +900,7 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
             'unique_users_count': daily_unique_users,
             'unique_users_count_REDEEMED': daily_unique_users_redeemed,
             'total_tpv': round(daily_total_tpv, 2) if has_daily_transactions else 0.0,
+            'median_check': round(daily_median_check, 2) if daily_median_check is not None else None,
             'tpv_vs_baseline': round(daily_tpv_vs_baseline, 2) if daily_tpv_vs_baseline is not None else None,
             'median_check_vs_baseline': round(daily_median_check_vs_baseline, 2) if daily_median_check_vs_baseline is not None else None,
             'marketing_spend': round(daily_marketing_spend, 2),
