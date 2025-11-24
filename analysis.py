@@ -1,11 +1,12 @@
 """
 Activation Performance Analysis Script
-Analyzes promotional activation performance for the last three complete calendar weeks
+Analyzes promotional activation performance for ALL complete calendar weeks since October 13, 2025
 
 FIXED:
 1. 1-hour window now includes transactions at exactly 1 hour (changed < to <=)
 2. New users are ONLY those who have NEVER transacted at this restaurant/location before
 3. Uses Claude API to parse activation descriptions when regex fails
+4. Shows every week since October 13, 2025 - each activation gets a row per week
 """
 
 import pandas as pd
@@ -21,49 +22,49 @@ from anthropic import Anthropic
 # ============================================================================
 
 CURRENT_DATE = datetime.now()  
+PROGRAM_START_DATE = datetime(2025, 10, 13)  # October 13, 2025
 
-# Calculate last three complete calendar weeks (Monday-Sunday)
-def get_last_complete_weeks(current_date):
-    """Calculate the last three complete calendar weeks ending before current_date"""
+# Calculate all complete calendar weeks since October 13, 2025
+def get_all_weeks_since_start(start_date, current_date):
+    """Calculate all complete calendar weeks from start_date until current_date"""
+    # Find the Monday of the week containing start_date
+    days_since_monday = start_date.weekday()  # Monday is 0
+    first_monday = start_date - timedelta(days=days_since_monday)
+    
     # Find the Monday of the current week
-    days_since_monday = current_date.weekday()  # Monday is 0
-    current_week_monday = current_date - timedelta(days=days_since_monday)
+    current_days_since_monday = current_date.weekday()
+    current_week_monday = current_date - timedelta(days=current_days_since_monday)
     
-    # Last complete week ends on Sunday before current week's Monday
-    last_week_end = current_week_monday - timedelta(days=1)  # Sunday
-    last_week_start = last_week_end - timedelta(days=6)  # Monday
+    # Generate all complete weeks (Monday-Sunday)
+    weeks = []
+    week_num = 1
+    week_start = first_monday
     
-    # Second last complete week
-    second_last_week_end = last_week_start - timedelta(days=1)  # Sunday
-    second_last_week_start = second_last_week_end - timedelta(days=6)  # Monday
+    while week_start < current_week_monday:
+        week_end = week_start + timedelta(days=6)  # Sunday
+        
+        weeks.append({
+            'week_number': week_num,
+            'week_label': f'Week {week_num}',
+            'week_start': week_start.replace(hour=0, minute=0, second=0),
+            'week_end': week_end.replace(hour=23, minute=59, second=59)
+        })
+        
+        week_num += 1
+        week_start = week_start + timedelta(days=7)  # Next Monday
     
-    # Third last complete week
-    third_last_week_end = second_last_week_start - timedelta(days=1)  # Sunday
-    third_last_week_start = third_last_week_end - timedelta(days=6)  # Monday
-    
-    return {
-        'week1_start': third_last_week_start.replace(hour=0, minute=0, second=0),
-        'week1_end': third_last_week_end.replace(hour=23, minute=59, second=59),
-        'week2_start': second_last_week_start.replace(hour=0, minute=0, second=0),
-        'week2_end': second_last_week_end.replace(hour=23, minute=59, second=59),
-        'week3_start': last_week_start.replace(hour=0, minute=0, second=0),
-        'week3_end': last_week_end.replace(hour=23, minute=59, second=59)
-    }
+    return weeks
 
-weeks = get_last_complete_weeks(CURRENT_DATE)
-ANALYSIS_START = weeks['week1_start']
-ANALYSIS_END = weeks['week3_end']
-WEEK1_START = weeks['week1_start']
-WEEK1_END = weeks['week1_end']
-WEEK2_START = weeks['week2_start']
-WEEK2_END = weeks['week2_end']
-WEEK3_START = weeks['week3_start']
-WEEK3_END = weeks['week3_end']
+all_weeks = get_all_weeks_since_start(PROGRAM_START_DATE, CURRENT_DATE)
+ANALYSIS_START = all_weeks[0]['week_start']
+ANALYSIS_END = all_weeks[-1]['week_end']
 
-print(f"Analysis Period:")
-print(f"  Week 1: {weeks['week1_start'].strftime('%B %d, %Y')} - {weeks['week1_end'].strftime('%B %d, %Y')}")
-print(f"  Week 2: {weeks['week2_start'].strftime('%B %d, %Y')} - {weeks['week2_end'].strftime('%B %d, %Y')}")
-print(f"  Week 3: {weeks['week3_start'].strftime('%B %d, %Y')} - {weeks['week3_end'].strftime('%B %d, %Y')}")
+print(f"Analysis Period: {len(all_weeks)} complete weeks")
+print(f"  Start: {ANALYSIS_START.strftime('%B %d, %Y')} (Week 1)")
+print(f"  End: {ANALYSIS_END.strftime('%B %d, %Y')} (Week {len(all_weeks)})")
+print(f"\nWeek Breakdown:")
+for week in all_weeks:
+    print(f"  {week['week_label']}: {week['week_start'].strftime('%B %d')} - {week['week_end'].strftime('%B %d, %Y')}")
 print()
 
 # ============================================================================
@@ -427,27 +428,9 @@ for grouping_idx, (grouping_key, group_activations) in enumerate(unique_grouping
     
     # Determine which week(s) this grouping overlaps with
     weeks_to_analyze = []
-    if overall_start_dt <= WEEK1_END and overall_end_dt >= WEEK1_START:
-        weeks_to_analyze.append({
-            'week_number': 1,
-            'week_label': 'Week 1',
-            'week_start': WEEK1_START,
-            'week_end': WEEK1_END
-        })
-    if overall_start_dt <= WEEK2_END and overall_end_dt >= WEEK2_START:
-        weeks_to_analyze.append({
-            'week_number': 2,
-            'week_label': 'Week 2',
-            'week_start': WEEK2_START,
-            'week_end': WEEK2_END
-        })
-    if overall_start_dt <= WEEK3_END and overall_end_dt >= WEEK3_START:
-        weeks_to_analyze.append({
-            'week_number': 3,
-            'week_label': 'Week 3',
-            'week_start': WEEK3_START,
-            'week_end': WEEK3_END
-        })
+    for week in all_weeks:
+        if overall_start_dt <= week['week_end'] and overall_end_dt >= week['week_start']:
+            weeks_to_analyze.append(week)
     
     # Analyze performance for each week separately
     for week_info in weeks_to_analyze:
